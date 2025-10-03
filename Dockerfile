@@ -10,7 +10,8 @@ COPY Cargo.toml Cargo.lock ./
 COPY ./src ./src
 
 # Build the project in release mode
-RUN cargo build --release
+RUN rustup target add x86_64-unknown-linux-musl
+RUN cargo build --release --target=x86_64-unknown-linux-musl
 
 FROM alpine
 
@@ -20,4 +21,5 @@ COPY --from=builder /usr/src/app/target/release/json-checker-rs /usr/local/bin/j
 
 
 # Set the startup command
+
 CMD ["json-checker-rs"]
