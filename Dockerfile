@@ -17,9 +17,10 @@ FROM alpine
 
 
 # Copy the compiled binary from the build stage
-COPY --from=builder /usr/src/app/target/release/json-checker-rs /usr/local/bin/json-checker-rs
+COPY --from=builder /usr/src/app/target/x86_64-unknown-linux-musl/release/json-checker-rs /usr/local/bin/json-checker-rs
 
 
 # Set the startup command
 
 CMD ["json-checker-rs"]
+
