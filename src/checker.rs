@@ -6,7 +6,6 @@ use std::fs;
 
 use crate::config::{Config, Rule, CheckResult};
 use crate::rules::CheckRule;
-use crate::json_path_finder::find_json_path;
 
 /// Main JSON validation engine
 pub struct JsonChecker {
@@ -438,4 +437,5 @@ impl JsonChecker {
             _ => {}
         }
     }
+
 }
