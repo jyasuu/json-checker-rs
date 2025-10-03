@@ -6,6 +6,8 @@ pub mod config;
 pub mod checker;
 pub mod rules;
 pub mod cli;
+pub mod path_finder;
+pub mod json_path_finder;
 
 #[cfg(test)]
 mod tests;

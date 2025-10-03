@@ -24,6 +24,8 @@ pub struct CheckResult {
     pub rule_name: String,
     pub passed: bool,
     pub message: String,
+    pub invalid_positions: Vec<String>,
+    pub values_found: Vec<serde_json::Value>,
 }
 
 impl CheckResult {
@@ -32,6 +34,24 @@ impl CheckResult {
             rule_name,
             passed,
             message,
+            invalid_positions: Vec::new(),
+            values_found: Vec::new(),
+        }
+    }
+
+    pub fn with_positions(
+        rule_name: String,
+        passed: bool,
+        message: String,
+        invalid_positions: Vec<String>,
+        values_found: Vec<serde_json::Value>,
+    ) -> Self {
+        Self {
+            rule_name,
+            passed,
+            message,
+            invalid_positions,
+            values_found,
         }
     }
 }

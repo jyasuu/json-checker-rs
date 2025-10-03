@@ -4,9 +4,16 @@
 
 use json_checker_rs::cli::Cli;
 use json_checker_rs::Result;
+use std::env;
 
 fn main() -> Result<()> {
-    // In a real CLI, you'd parse command-line arguments here
-    // For now, we'll use the default config file
-    Cli::run(None)
+    let args: Vec<String> = env::args().collect();
+    
+    let config_file = if args.len() > 1 {
+        Some(args[1].as_str())
+    } else {
+        None
+    };
+    
+    Cli::run(config_file)
 }

@@ -6,6 +6,7 @@ use std::fs;
 
 use crate::config::{Config, Rule, CheckResult};
 use crate::rules::CheckRule;
+use crate::json_path_finder::find_json_path;
 
 /// Main JSON validation engine
 pub struct JsonChecker {
@@ -68,7 +69,43 @@ impl JsonChecker {
         let message = if passed {
             format!("✓ Rule '{}' passed", rule.name)
         } else {
-            format!("✗ Rule '{}' failed at path '{}'", rule.name, rule.jsonpath)
+            let mut error_msg = format!("✗ Rule '{}' failed at JSONPath '{}'", rule.name, rule.jsonpath);
+            
+            // Find and show invalid values with their exact positions
+            if !selected.is_empty() {
+                let invalid_indices = self.find_invalid_value_indices(&selected, &rule.check);
+                
+                if !invalid_indices.is_empty() {
+                    error_msg.push_str("\n   Invalid nodes found at:");
+                    
+                    // Use a set to track unique paths and avoid duplicates
+                    let mut unique_paths = std::collections::HashSet::new();
+                    
+                    for &index in &invalid_indices {
+                        if index < selected.len() {
+                            let invalid_value = selected[index];
+                            // Use JSONPath context to find the correct path for this specific selected value
+                            if let Some(path) = self.find_path_for_selected_value(&json, &rule.jsonpath, index) {
+                                let path_with_value = match invalid_value {
+                                    Value::String(s) => format!("{} = \"{}\"", path, s),
+                                    Value::Number(n) => format!("{} = {}", path, n),
+                                    Value::Bool(b) => format!("{} = {}", path, b),
+                                    Value::Null => format!("{} = null", path),
+                                    Value::Array(arr) => format!("{} = array[{}]", path, arr.len()),
+                                    Value::Object(obj) => format!("{} = object{{{}}}", path, obj.len()),
+                                };
+                                
+                                // Only add if we haven't seen this path+value combination before
+                                if unique_paths.insert(path_with_value.clone()) {
+                                    error_msg.push_str(&format!("\n   • {}", path_with_value));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            error_msg
         };
 
         Ok(CheckResult::new(rule.name.clone(), passed, message))
@@ -233,6 +270,172 @@ impl JsonChecker {
             Value::Array(arr) => arr.is_empty(),
             Value::Object(obj) => obj.is_empty(),
             _ => false,
+        }
+    }
+
+    /// Find indices of values that are causing validation failures
+    pub fn find_invalid_value_indices(&self, values: &[&Value], check: &CheckRule) -> Vec<usize> {
+        let mut invalid_indices = Vec::new();
+
+        match check {
+            CheckRule::Empty => {
+                for (i, v) in values.iter().enumerate() {
+                    if !self.is_empty_value(v) {
+                        invalid_indices.push(i);
+                    }
+                }
+            }
+            CheckRule::NonEmpty => {
+                for (i, v) in values.iter().enumerate() {
+                    if self.is_empty_value(v) {
+                        invalid_indices.push(i);
+                    }
+                }
+            }
+            CheckRule::Equals { value: target } => {
+                let has_match = values.iter().any(|v| *v == target);
+                if !has_match {
+                    // If no values match, all are invalid
+                    invalid_indices.extend(0..values.len());
+                }
+            }
+            CheckRule::NotEquals { value: target } => {
+                for (i, v) in values.iter().enumerate() {
+                    if *v == target {
+                        invalid_indices.push(i);
+                    }
+                }
+            }
+            CheckRule::Contains { value: target } => {
+                let has_match = values.iter().any(|v| self.contains(v, target));
+                if !has_match {
+                    invalid_indices.extend(0..values.len());
+                }
+            }
+            CheckRule::ContainedBy { value: container } => {
+                for (i, v) in values.iter().enumerate() {
+                    if !self.contains(container, v) {
+                        invalid_indices.push(i);
+                    }
+                }
+            }
+            CheckRule::Regex { pattern } => {
+                if let Ok(re) = regex::Regex::new(pattern) {
+                    for (i, v) in values.iter().enumerate() {
+                        let matches = if let Value::String(s) = v {
+                            re.is_match(s)
+                        } else {
+                            false
+                        };
+                        if !matches {
+                            invalid_indices.push(i);
+                        }
+                    }
+                }
+            }
+            CheckRule::GreaterThan { value: threshold } => {
+                for (i, v) in values.iter().enumerate() {
+                    let is_valid = if let Some(n) = v.as_f64() {
+                        n > *threshold
+                    } else {
+                        false
+                    };
+                    if !is_valid {
+                        invalid_indices.push(i);
+                    }
+                }
+            }
+            CheckRule::LessThan { value: threshold } => {
+                for (i, v) in values.iter().enumerate() {
+                    let is_valid = if let Some(n) = v.as_f64() {
+                        n < *threshold
+                    } else {
+                        false
+                    };
+                    if !is_valid {
+                        invalid_indices.push(i);
+                    }
+                }
+            }
+            CheckRule::ArrayLength { min, max } => {
+                for (i, v) in values.iter().enumerate() {
+                    let is_valid = if let Value::Array(arr) = v {
+                        let len = arr.len();
+                        let min_ok = min.map_or(true, |m| len >= m);
+                        let max_ok = max.map_or(true, |m| len <= m);
+                        min_ok && max_ok
+                    } else {
+                        false
+                    };
+                    if !is_valid {
+                        invalid_indices.push(i);
+                    }
+                }
+            }
+            _ => {
+                // For other rules, if validation failed, consider all values as potentially invalid
+                invalid_indices.extend(0..values.len());
+            }
+        }
+
+        invalid_indices
+    }
+
+    /// Find the correct path for a selected value based on JSONPath and its index
+    pub fn find_path_for_selected_value(&self, json: &Value, jsonpath: &str, index: usize) -> Option<String> {
+        // For simple cases like $.users[*].name or $.users[*].email, we can reconstruct the path
+        if jsonpath.contains("[*]") {
+            let base_path = jsonpath.replace("[*]", &format!("[{}]", index));
+            return Some(base_path);
+        }
+        
+        // For complex JSONPath queries, we need to find all matching paths and return the correct one
+        let mut selector = jsonpath_lib::selector(json);
+        if let Ok(results) = selector(jsonpath) {
+            if index < results.len() {
+                let target_value = results[index];
+                // Find all occurrences of this value and return the one at the correct index
+                return self.find_nth_occurrence_path(json, target_value, index);
+            }
+        }
+        
+        None
+    }
+
+    /// Find the nth occurrence of a value in JSON and return its path
+    fn find_nth_occurrence_path(&self, json: &Value, target: &Value, target_index: usize) -> Option<String> {
+        let mut found_paths = Vec::new();
+        self.find_all_paths_recursive(json, target, vec!["$".to_string()], &mut found_paths);
+        
+        if target_index < found_paths.len() {
+            Some(found_paths[target_index].clone())
+        } else {
+            None
+        }
+    }
+
+    /// Recursively find all paths to a target value
+    fn find_all_paths_recursive(&self, value: &Value, target: &Value, path: Vec<String>, found_paths: &mut Vec<String>) {
+        if value == target {
+            found_paths.push(path.join("."));
+        }
+
+        match value {
+            Value::Object(map) => {
+                for (key, val) in map {
+                    let mut new_path = path.clone();
+                    new_path.push(key.clone());
+                    self.find_all_paths_recursive(val, target, new_path, found_paths);
+                }
+            }
+            Value::Array(arr) => {
+                for (index, val) in arr.iter().enumerate() {
+                    let mut new_path = path.clone();
+                    new_path.push(format!("[{}]", index));
+                    self.find_all_paths_recursive(val, target, new_path, found_paths);
+                }
+            }
+            _ => {}
         }
     }
 }
